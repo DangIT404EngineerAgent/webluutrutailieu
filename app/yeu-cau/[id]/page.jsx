@@ -35,19 +35,25 @@ export default function ChiTietYeuCauUser() {
     else if (formatLower === 'powerpoint') ext = '.pptx'
     else if (formatLower === 'video') ext = '.mp4'
 
+    const isInline = formatLower === 'pdf' || formatLower === 'video'
     const title = request.fulfilled_doc.title || 'Tai_lieu'
     const downloadName = title.toLowerCase().endsWith(ext) ? title : `${title}${ext}`
 
+    let newTab = null
+    if (isInline) {
+      newTab = window.open('about:blank', '_blank')
+    }
+
+    const options = isInline ? {} : { download: downloadName }
+
     const { data } = await supabase.storage
       .from('documents')
-      .createSignedUrl(request.fulfilled_doc.file_path, 300, {
-        download: downloadName
-      })
+      .createSignedUrl(request.fulfilled_doc.file_path, 300, options)
 
     if (data?.signedUrl) {
-      if (formatLower === 'pdf' || formatLower === 'video') {
-        window.open(data.signedUrl, '_blank')
-      } else {
+      if (isInline && newTab) {
+        newTab.location.href = data.signedUrl
+      } else if (!isInline) {
         const a = document.createElement('a')
         a.href = data.signedUrl
         a.target = '_blank'
@@ -56,6 +62,8 @@ export default function ChiTietYeuCauUser() {
         a.click()
         document.body.removeChild(a)
       }
+    } else {
+      if (newTab) newTab.close()
     }
   }
 
