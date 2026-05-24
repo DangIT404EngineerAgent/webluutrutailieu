@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { useAuth } from '@/lib/auth-context'
 import ProtectedRoute from '@/components/ProtectedRoute'
@@ -15,14 +15,67 @@ export default function AdminChatHub() {
 
   const messagesEndRef = useRef(null)
   const channelRef = useRef(null)
+  const pollingRef = useRef(null)
+  const lastMessageTimeRef = useRef(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
 
+  // Hàm fetch tin nhắn mới (dùng cho polling)
+  const fetchNewMessages = useCallback(async (currentRoomId) => {
+    if (!currentRoomId || !supabase) return
+
+    try {
+      let query = supabase
+        .from('chat_messages')
+        .select('*, profiles(full_name, role)')
+        .eq('room_id', currentRoomId)
+        .order('created_at', { ascending: true })
+
+      if (lastMessageTimeRef.current) {
+        query = query.gt('created_at', lastMessageTimeRef.current)
+      }
+
+      const { data: newMsgs, error } = await query.limit(50)
+
+      if (error) {
+        console.error('Polling error:', error.message)
+        return
+      }
+
+      if (newMsgs && newMsgs.length > 0) {
+        setMessages(prev => {
+          const existingIds = new Set(prev.map(m => m.id))
+          const uniqueNewMsgs = newMsgs.filter(m => !existingIds.has(m.id))
+          if (uniqueNewMsgs.length === 0) return prev
+
+          const updated = [...prev, ...uniqueNewMsgs]
+          lastMessageTimeRef.current = updated[updated.length - 1].created_at
+          return updated
+        })
+
+        // Cập nhật sidebar với tin nhắn mới nhất
+        const latestMsg = newMsgs[newMsgs.length - 1]
+        setChatRooms(prev => prev.map(room =>
+          room.id === currentRoomId
+            ? {
+              ...room,
+              lastMessage: latestMsg.content,
+              lastTime: new Date(latestMsg.created_at).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+            }
+            : room
+        ))
+      }
+    } catch (err) {
+      console.error('Polling fetch error:', err)
+    }
+  }, [supabase])
+
   // Lấy danh sách phòng chat
   useEffect(() => {
     if (!user || !supabase) return
+    let cancelled = false
 
     const fetchRooms = async () => {
       const { data, error } = await supabase
@@ -31,7 +84,7 @@ export default function AdminChatHub() {
         .eq('type', 'private')
         .order('created_at', { ascending: false })
 
-      if (data) {
+      if (data && !cancelled) {
         const rooms = data.map(room => {
           const sortedMsgs = (room.chat_messages || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
           const lastMsg = sortedMsgs[0]
@@ -51,19 +104,21 @@ export default function AdminChatHub() {
           setActiveChat(rooms[0].id)
         }
       }
-      setLoadingRooms(false)
+      if (!cancelled) setLoadingRooms(false)
     }
 
     fetchRooms()
-  }, [user, supabase])
+    return () => { cancelled = true }
+  }, [user?.id, supabase])
 
-  // Lấy tin nhắn & bật realtime cho phòng đang chọn
+  // Lấy tin nhắn & bật realtime + polling cho phòng đang chọn
   useEffect(() => {
     if (!activeChat || !supabase) return
     let isMounted = true
 
     const initChat = async () => {
       setLoadingMessages(true)
+      lastMessageTimeRef.current = null
       
       const { data: msgs, error } = await supabase
         .from('chat_messages')
@@ -72,12 +127,17 @@ export default function AdminChatHub() {
         .order('created_at', { ascending: true })
 
       if (isMounted) {
-        setMessages(msgs || [])
+        const allMsgs = msgs || []
+        setMessages(allMsgs)
+        if (allMsgs.length > 0) {
+          lastMessageTimeRef.current = allMsgs[allMsgs.length - 1].created_at
+        }
         setLoadingMessages(false)
       }
 
       if (!isMounted) return
 
+      // === REALTIME: postgres_changes ===
       if (channelRef.current) {
         supabase.removeChannel(channelRef.current)
       }
@@ -90,20 +150,36 @@ export default function AdminChatHub() {
           table: 'chat_messages',
           filter: `room_id=eq.${activeChat}`,
         }, async (payload) => {
+          if (!isMounted) return
           const { data: senderProfile } = await supabase
             .from('profiles')
             .select('full_name, role')
             .eq('id', payload.new.sender_id)
             .single()
 
-          if (isMounted) {
-            setMessages(prev => {
-              if (prev.some(m => m.id === payload.new.id)) return prev
-              return [...prev, { ...payload.new, profiles: senderProfile }]
-            })
-          }
+          const newMsg = { ...payload.new, profiles: senderProfile }
+
+          setMessages(prev => {
+            if (prev.some(m => m.id === newMsg.id)) return prev
+            const updated = [...prev, newMsg]
+            lastMessageTimeRef.current = newMsg.created_at
+            return updated
+          })
+
+          // Cập nhật sidebar
+          setChatRooms(prev => prev.map(room =>
+            room.id === activeChat
+              ? { ...room, lastMessage: newMsg.content, lastTime: new Date(newMsg.created_at).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) }
+              : room
+          ))
         })
         .subscribe()
+
+      // === POLLING BACKUP: mỗi 3 giây ===
+      if (pollingRef.current) clearInterval(pollingRef.current)
+      pollingRef.current = setInterval(() => {
+        if (isMounted) fetchNewMessages(activeChat)
+      }, 3000)
     }
 
     initChat()
@@ -113,8 +189,11 @@ export default function AdminChatHub() {
       if (channelRef.current) {
         supabase.removeChannel(channelRef.current)
       }
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current)
+      }
     }
-  }, [activeChat, supabase])
+  }, [activeChat, supabase, fetchNewMessages])
 
   useEffect(() => {
     scrollToBottom()
@@ -125,7 +204,7 @@ export default function AdminChatHub() {
     if (!input.trim() || !activeChat || !user) return
 
     const currentInput = input.trim()
-    setInput('') // UX: xoá text ngay khi nhấn gửi
+    setInput('')
 
     const { data: newMsg, error } = await supabase
       .from('chat_messages')
@@ -138,10 +217,11 @@ export default function AdminChatHub() {
       .single()
 
     if (!error && newMsg) {
-      // Cập nhật messages
       setMessages(prev => {
         if (prev.some(m => m.id === newMsg.id)) return prev
-        return [...prev, newMsg]
+        const updated = [...prev, newMsg]
+        lastMessageTimeRef.current = newMsg.created_at
+        return updated
       })
       
       // Cập nhật sidebar

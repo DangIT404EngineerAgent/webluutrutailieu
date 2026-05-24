@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import ProtectedRoute from '@/components/ProtectedRoute'
 
@@ -12,13 +12,56 @@ export default function ChatChung() {
   const [chatError, setChatError] = useState('')
   const messagesEndRef = useRef(null)
   const channelRef = useRef(null)
+  const pollingRef = useRef(null)
+  const lastMessageTimeRef = useRef(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
 
+  // Hàm fetch tin nhắn mới (dùng cho polling)
+  const fetchNewMessages = useCallback(async (currentRoomId) => {
+    if (!currentRoomId || !supabase) return
+
+    try {
+      let query = supabase
+        .from('chat_messages')
+        .select('*, profiles(full_name, role)')
+        .eq('room_id', currentRoomId)
+        .order('created_at', { ascending: true })
+
+      // Chỉ lấy tin nhắn mới hơn tin nhắn cuối cùng
+      if (lastMessageTimeRef.current) {
+        query = query.gt('created_at', lastMessageTimeRef.current)
+      }
+
+      const { data: newMsgs, error } = await query.limit(50)
+
+      if (error) {
+        console.error('Polling error:', error.message)
+        return
+      }
+
+      if (newMsgs && newMsgs.length > 0) {
+        setMessages(prev => {
+          const existingIds = new Set(prev.map(m => m.id))
+          const uniqueNewMsgs = newMsgs.filter(m => !existingIds.has(m.id))
+          if (uniqueNewMsgs.length === 0) return prev
+          
+          const updated = [...prev, ...uniqueNewMsgs]
+          // Cập nhật thời gian tin nhắn mới nhất
+          lastMessageTimeRef.current = updated[updated.length - 1].created_at
+          return updated
+        })
+      }
+    } catch (err) {
+      console.error('Polling fetch error:', err)
+    }
+  }, [supabase])
+
   useEffect(() => {
     if (!user || !supabase) return
+    let isMounted = true
 
     const initChat = async () => {
       try {
@@ -34,15 +77,16 @@ export default function ChatChung() {
 
         if (roomError) {
           console.error('Lỗi fetch chat room:', roomError.message)
-          setChatError('Không thể tải phòng chat. Vui lòng thử lại sau.')
-          setLoading(false)
+          if (isMounted) {
+            setChatError('Không thể tải phòng chat. Vui lòng thử lại sau.')
+            setLoading(false)
+          }
           return
         }
 
         let actualRoomId = null
 
         if (!rooms || rooms.length === 0) {
-          // Nếu chưa có, và là admin, tự động tạo!
           if (profile?.role === 'admin') {
             const { data: newRoom, error: createError } = await supabase
               .from('chat_rooms')
@@ -51,23 +95,27 @@ export default function ChatChung() {
               .single()
 
             if (createError || !newRoom) {
-              setChatError('Phòng chat chung chưa được tạo và không thể tự tạo.')
-              setLoading(false)
+              if (isMounted) {
+                setChatError('Phòng chat chung chưa được tạo và không thể tự tạo.')
+                setLoading(false)
+              }
               return
             }
             actualRoomId = newRoom.id
           } else {
-            setChatError('Phòng chat chung chưa được tạo. Liên hệ Admin để tạo.')
-            setLoading(false)
+            if (isMounted) {
+              setChatError('Phòng chat chung chưa được tạo. Liên hệ Admin để tạo.')
+              setLoading(false)
+            }
             return
           }
         } else {
           actualRoomId = rooms[0].id
         }
 
-        setRoomId(actualRoomId)
+        if (isMounted) setRoomId(actualRoomId)
 
-        // Fetch tin nhắn hiện có
+        // Fetch toàn bộ tin nhắn
         const { data: msgs, error: msgError } = await supabase
           .from('chat_messages')
           .select('*, profiles(full_name, role)')
@@ -78,11 +126,17 @@ export default function ChatChung() {
         if (msgError) {
           console.error('Lỗi fetch messages:', msgError.message)
         }
-        
-        setMessages(msgs || [])
-        setLoading(false) // Phải gọi setLoading(false) ở đây
 
-        // Lắng nghe realtime
+        if (isMounted) {
+          const allMsgs = msgs || []
+          setMessages(allMsgs)
+          if (allMsgs.length > 0) {
+            lastMessageTimeRef.current = allMsgs[allMsgs.length - 1].created_at
+          }
+          setLoading(false)
+        }
+
+        // === REALTIME: Thử dùng postgres_changes ===
         if (channelRef.current) {
           supabase.removeChannel(channelRef.current)
         }
@@ -95,6 +149,7 @@ export default function ChatChung() {
             table: 'chat_messages',
             filter: `room_id=eq.${actualRoomId}`,
           }, async (payload) => {
+            if (!isMounted) return
             const { data: senderProfile } = await supabase
               .from('profiles')
               .select('full_name, role')
@@ -108,25 +163,41 @@ export default function ChatChung() {
 
             setMessages(prev => {
               if (prev.some(m => m.id === newMsg.id)) return prev
-              return [...prev, newMsg]
+              const updated = [...prev, newMsg]
+              lastMessageTimeRef.current = newMsg.created_at
+              return updated
             })
           })
           .subscribe()
+
+        // === POLLING BACKUP: Nếu Realtime không hoạt động ===
+        // Poll mỗi 3 giây để đảm bảo luôn nhận tin nhắn mới
+        if (pollingRef.current) clearInterval(pollingRef.current)
+        pollingRef.current = setInterval(() => {
+          if (isMounted) fetchNewMessages(actualRoomId)
+        }, 3000)
+
       } catch (err) {
         console.error('Chat init error:', err)
-        setChatError('Đã xảy ra lỗi hệ thống khi kết nối chat.')
-        setLoading(false)
+        if (isMounted) {
+          setChatError('Đã xảy ra lỗi hệ thống khi kết nối chat.')
+          setLoading(false)
+        }
       }
     }
 
     initChat()
 
     return () => {
+      isMounted = false
       if (channelRef.current) {
         supabase.removeChannel(channelRef.current)
       }
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current)
+      }
     }
-  }, [user, profile, supabase])
+  }, [user?.id, profile, supabase, fetchNewMessages])
 
   useEffect(() => {
     scrollToBottom()
@@ -137,7 +208,7 @@ export default function ChatChung() {
     if (!input.trim() || !roomId || !user) return
 
     const currentInput = input.trim()
-    setInput('') // UX tốt hơn: xoá text ngay khi nhấn Gửi
+    setInput('')
 
     const { data: newMsg, error } = await supabase
       .from('chat_messages')
@@ -151,14 +222,15 @@ export default function ChatChung() {
 
     if (!error && newMsg) {
       setMessages(prev => {
-        // Tránh trùng lặp nếu Realtime đã bắt được tin nhắn này
         if (prev.some(m => m.id === newMsg.id)) return prev
-        return [...prev, newMsg]
+        const updated = [...prev, newMsg]
+        lastMessageTimeRef.current = newMsg.created_at
+        return updated
       })
     } else if (error) {
       console.error('Lỗi gửi tin nhắn:', error.message)
       alert('Không thể gửi tin nhắn. Vui lòng thử lại.')
-      setInput(currentInput) // Khôi phục lại text nếu lỗi
+      setInput(currentInput)
     }
   }
 
@@ -193,12 +265,12 @@ export default function ChatChung() {
               <p style={{ textAlign: 'center', color: 'var(--text-muted)', margin: 'auto' }}>Chưa có tin nhắn nào. Hãy là người đầu tiên bắt đầu cuộc trò chuyện! 🎉</p>
             ) : messages.map(msg => {
               const isMe = msg.sender_id === user?.id
-              const isAdmin = msg.profiles?.role === 'admin'
+              const isAdminMsg = msg.profiles?.role === 'admin'
               return (
                 <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isMe ? 'flex-end' : 'flex-start' }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem', marginBottom: '0.25rem' }}>
-                    <span style={{ fontWeight: '600', fontSize: '0.9rem', color: isAdmin ? 'var(--primary)' : 'var(--text)' }}>
-                      {isAdmin && '🛡️ '}
+                    <span style={{ fontWeight: '600', fontSize: '0.9rem', color: isAdminMsg ? 'var(--primary)' : 'var(--text)' }}>
+                      {isAdminMsg && '🛡️ '}
                       {msg.profiles?.full_name || 'Người dùng ẩn danh'}
                     </span>
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>

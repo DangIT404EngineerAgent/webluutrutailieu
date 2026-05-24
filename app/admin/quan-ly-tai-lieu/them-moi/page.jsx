@@ -55,10 +55,13 @@ export default function ThemMoiTaiLieu() {
     const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`
     const filePath = `documents/original/${fileName}`
 
-    // 1. Upload file gốc lên Storage
+    // 1. Upload file gốc lên Storage (gửi kèm contentType để Supabase lưu đúng MIME type)
     const { error: uploadError } = await supabase.storage
       .from('documents')
-      .upload(filePath, file)
+      .upload(filePath, file, {
+        contentType: file.type || 'application/octet-stream',
+        upsert: false
+      })
 
     if (uploadError) {
       setError('Lỗi upload file: ' + uploadError.message)
@@ -83,7 +86,10 @@ export default function ThemMoiTaiLieu() {
 
       const { error: previewUploadError } = await supabase.storage
         .from('documents')
-        .upload(previewPath, previewFile)
+        .upload(previewPath, previewFile, {
+          contentType: previewFile.type || 'application/pdf',
+          upsert: false
+        })
 
       if (previewUploadError) {
         setError('Lỗi upload file preview: ' + previewUploadError.message)

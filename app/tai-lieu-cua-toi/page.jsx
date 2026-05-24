@@ -13,6 +13,8 @@ export default function TaiLieuCuaToi() {
   useEffect(() => {
     if (!user) return
 
+    let cancelled = false
+
     const fetchData = async () => {
       try {
         // Lấy tài liệu đã nhận
@@ -24,7 +26,7 @@ export default function TaiLieuCuaToi() {
           .order('created_at', { ascending: false })
 
         if (docsError) console.error('Lỗi fetch tài liệu:', docsError.message)
-        setDocuments(docs || [])
+        if (!cancelled) setDocuments(docs || [])
 
         // Lấy lịch sử yêu cầu
         const { data: reqs, error: reqsError } = await supabase
@@ -34,26 +36,43 @@ export default function TaiLieuCuaToi() {
           .order('created_at', { ascending: false })
 
         if (reqsError) console.error('Lỗi fetch requests:', reqsError.message)
-        setRequests(reqs || [])
+        if (!cancelled) setRequests(reqs || [])
       } catch (err) {
         console.error('Lỗi không mong muốn:', err)
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
     fetchData()
-  }, [user])
 
-  const handleDownload = async (filePath, title) => {
+    return () => { cancelled = true }
+  }, [user?.id])
+
+  const handleDownload = async (filePath, title, format) => {
+    let ext = ''
+    const formatLower = format?.toLowerCase() || ''
+    if (formatLower === 'word') ext = '.docx'
+    else if (formatLower === 'pdf') ext = '.pdf'
+    else if (formatLower === 'powerpoint') ext = '.pptx'
+    else if (formatLower === 'video') ext = '.mp4'
+
+    const downloadName = title.toLowerCase().endsWith(ext) ? title : `${title}${ext}`
+
     const { data, error } = await supabase.storage
       .from('documents')
-      .createSignedUrl(filePath, 60)
+      .createSignedUrl(filePath, 300, {
+        download: downloadName
+      })
 
     if (data?.signedUrl) {
+      // Tạo thẻ a để mở tab mới tải file
       const a = document.createElement('a')
       a.href = data.signedUrl
-      a.download = title
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      document.body.appendChild(a)
       a.click()
+      document.body.removeChild(a)
     } else {
       alert('Lỗi tải file: ' + (error?.message || 'Không tìm thấy file'))
     }
@@ -112,7 +131,7 @@ export default function TaiLieuCuaToi() {
                         </div>
                       </div>
                       <div style={{ marginTop: '1.5rem', display: 'flex', gap: '1rem' }}>
-                        <button onClick={() => handleDownload(doc.file_path, doc.title)} className="btn btn-primary" style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem' }}>
+                        <button onClick={() => handleDownload(doc.file_path, doc.title, doc.file_format)} className="btn btn-primary" style={{ flex: 1, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem' }}>
                           ⬇️ Tải Xuống
                         </button>
                       </div>

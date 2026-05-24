@@ -12,6 +12,8 @@ export default function LichSuYeuCau() {
   useEffect(() => {
     if (!user) return
 
+    let cancelled = false
+
     const fetchRequests = async () => {
       const { data } = await supabase
         .from('document_requests')
@@ -19,11 +21,13 @@ export default function LichSuYeuCau() {
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
 
-      if (data) setRequests(data)
-      setLoading(false)
+      if (data && !cancelled) setRequests(data)
+      if (!cancelled) setLoading(false)
     }
     fetchRequests()
-  }, [user])
+
+    return () => { cancelled = true }
+  }, [user?.id])
 
   const getStatusStyle = (status) => {
     switch (status) {

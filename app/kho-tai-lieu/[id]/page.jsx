@@ -38,15 +38,30 @@ export default function ChiTietTaiLieu() {
   const handleDownload = async () => {
     if (!doc?.file_path) return
 
+    let ext = ''
+    const formatLower = doc.file_format?.toLowerCase() || ''
+    if (formatLower === 'word') ext = '.docx'
+    else if (formatLower === 'pdf') ext = '.pdf'
+    else if (formatLower === 'powerpoint') ext = '.pptx'
+    else if (formatLower === 'video') ext = '.mp4'
+
+    const downloadName = doc.title.toLowerCase().endsWith(ext) ? doc.title : `${doc.title}${ext}`
+
     const { data, error } = await supabase.storage
       .from('documents')
-      .createSignedUrl(doc.file_path, 60)
+      .createSignedUrl(doc.file_path, 300, {
+        download: downloadName
+      })
 
     if (data?.signedUrl) {
+      // Tạo thẻ a để mở tab mới tải file
       const a = document.createElement('a')
       a.href = data.signedUrl
-      a.download = doc.title
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      document.body.appendChild(a)
       a.click()
+      document.body.removeChild(a)
     } else {
       alert('Lỗi tải file: ' + (error?.message || 'Không tìm thấy file'))
     }

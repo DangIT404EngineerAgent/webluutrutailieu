@@ -18,15 +18,17 @@ export default function KhoTaiLieu() {
   const previewSupportedFormats = ['pdf', 'video', 'word', 'powerpoint']
 
   useEffect(() => {
+    let cancelled = false
+
     const fetchData = async () => {
       try {
         // Fetch categories
         const { data: cats, error: catError } = await supabase.from('categories').select('*').order('name')
         if (catError) {
           console.error('Lỗi fetch categories:', catError)
-          setErrorMsg(catError.message)
+          if (!cancelled) setErrorMsg(catError.message)
         }
-        if (cats) setCategories(cats)
+        if (cats && !cancelled) setCategories(cats)
 
         // Fetch public documents
         const { data: docs, error: docError } = await supabase
@@ -37,17 +39,19 @@ export default function KhoTaiLieu() {
 
         if (docError) {
           console.error('Lỗi fetch documents:', docError)
-          setErrorMsg(docError.message)
+          if (!cancelled) setErrorMsg(docError.message)
         }
-        setDocuments(docs || [])
+        if (!cancelled) setDocuments(docs || [])
       } catch (err) {
         console.error('Unexpected error during fetch:', err)
-        setErrorMsg(err.message)
+        if (!cancelled) setErrorMsg(err.message)
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
     fetchData()
+
+    return () => { cancelled = true }
   }, [])
 
   // Lọc tài liệu
@@ -73,16 +77,31 @@ export default function KhoTaiLieu() {
   const handleFilterFormatChange = (e) => { setFilterFormat(e.target.value); setCurrentPage(1) }
 
   // Tải file gốc
-  const handleDownload = async (filePath, title) => {
+  const handleDownload = async (filePath, title, format) => {
+    let ext = ''
+    const formatLower = format?.toLowerCase() || ''
+    if (formatLower === 'word') ext = '.docx'
+    else if (formatLower === 'pdf') ext = '.pdf'
+    else if (formatLower === 'powerpoint') ext = '.pptx'
+    else if (formatLower === 'video') ext = '.mp4'
+
+    const downloadName = title.toLowerCase().endsWith(ext) ? title : `${title}${ext}`
+
     const { data, error } = await supabase.storage
       .from('documents')
-      .createSignedUrl(filePath, 60)
+      .createSignedUrl(filePath, 300, {
+        download: downloadName
+      })
 
     if (data?.signedUrl) {
+      // Tạo thẻ a để mở tab mới tải file
       const a = document.createElement('a')
       a.href = data.signedUrl
-      a.download = title
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      document.body.appendChild(a)
       a.click()
+      document.body.removeChild(a)
     } else {
       alert('Lỗi tải file: ' + (error?.message || 'Không tìm thấy file'))
     }
@@ -173,7 +192,7 @@ export default function KhoTaiLieu() {
                       Xem chi tiết
                     </Link>
                   ) : (
-                    <button className="btn btn-primary" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }} onClick={() => handleDownload(doc.file_path, doc.title)}>
+                    <button className="btn btn-primary" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }} onClick={() => handleDownload(doc.file_path, doc.title, doc.file_format)}>
                       ⬇️ Tải xuống
                     </button>
                   )}

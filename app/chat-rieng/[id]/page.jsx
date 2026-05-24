@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
@@ -16,18 +16,58 @@ export default function ChatRiengDetail() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(true)
   const messagesEndRef = useRef(null)
+  const channelRef = useRef(null)
+  const pollingRef = useRef(null)
+  const lastMessageTimeRef = useRef(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
 
+  // Hàm fetch tin nhắn mới (dùng cho polling)
+  const fetchNewMessages = useCallback(async (currentRoomId) => {
+    if (!currentRoomId || !supabase) return
+
+    try {
+      let query = supabase
+        .from('chat_messages')
+        .select('*, profiles(full_name, role)')
+        .eq('room_id', currentRoomId)
+        .order('created_at', { ascending: true })
+
+      if (lastMessageTimeRef.current) {
+        query = query.gt('created_at', lastMessageTimeRef.current)
+      }
+
+      const { data: newMsgs, error } = await query.limit(50)
+
+      if (error) {
+        console.error('Polling error:', error.message)
+        return
+      }
+
+      if (newMsgs && newMsgs.length > 0) {
+        setMessages(prev => {
+          const existingIds = new Set(prev.map(m => m.id))
+          const uniqueNewMsgs = newMsgs.filter(m => !existingIds.has(m.id))
+          if (uniqueNewMsgs.length === 0) return prev
+
+          const updated = [...prev, ...uniqueNewMsgs]
+          lastMessageTimeRef.current = updated[updated.length - 1].created_at
+          return updated
+        })
+      }
+    } catch (err) {
+      console.error('Polling fetch error:', err)
+    }
+  }, [supabase])
+
   useEffect(() => {
     if (!user) return
     let isMounted = true
-    let channel = null
 
     const initChat = async () => {
-      // Tìm phòng chat bằng id (khi vào từ danh sách chat) hoặc bằng request_id (khi vào từ chi tiết yêu cầu)
+      // Tìm phòng chat bằng id hoặc request_id
       const { data: roomData, error: roomError } = await supabase
         .from('chat_rooms')
         .select('*, document_requests(id, title, status, budget, is_paid)')
@@ -54,15 +94,23 @@ export default function ChatRiengDetail() {
         .eq('room_id', actualRoomId)
         .order('created_at', { ascending: true })
 
-      if (msgs && isMounted) {
-        setMessages(msgs)
+      if (isMounted) {
+        const allMsgs = msgs || []
+        setMessages(allMsgs)
+        if (allMsgs.length > 0) {
+          lastMessageTimeRef.current = allMsgs[allMsgs.length - 1].created_at
+        }
+        setLoading(false)
       }
-      if (isMounted) setLoading(false)
 
       if (!isMounted) return
 
-      // Realtime subscription
-      channel = supabase
+      // === REALTIME: postgres_changes ===
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current)
+      }
+
+      channelRef.current = supabase
         .channel(`private-chat-${actualRoomId}`)
         .on('postgres_changes', {
           event: 'INSERT',
@@ -70,28 +118,43 @@ export default function ChatRiengDetail() {
           table: 'chat_messages',
           filter: `room_id=eq.${actualRoomId}`,
         }, async (payload) => {
+          if (!isMounted) return
           const { data: senderProfile } = await supabase
             .from('profiles')
             .select('full_name, role')
             .eq('id', payload.new.sender_id)
             .single()
 
-          if (isMounted) {
-            setMessages(prev => [...prev, { ...payload.new, profiles: senderProfile }])
-          }
+          const newMsg = { ...payload.new, profiles: senderProfile }
+
+          setMessages(prev => {
+            if (prev.some(m => m.id === newMsg.id)) return prev
+            const updated = [...prev, newMsg]
+            lastMessageTimeRef.current = newMsg.created_at
+            return updated
+          })
         })
         .subscribe()
+
+      // === POLLING BACKUP: mỗi 3 giây ===
+      if (pollingRef.current) clearInterval(pollingRef.current)
+      pollingRef.current = setInterval(() => {
+        if (isMounted) fetchNewMessages(actualRoomId)
+      }, 3000)
     }
 
     initChat()
 
     return () => {
       isMounted = false
-      if (channel) {
-        supabase.removeChannel(channel)
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current)
+      }
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current)
       }
     }
-  }, [user, urlParamId, supabase])
+  }, [user?.id, urlParamId, supabase, fetchNewMessages])
 
   useEffect(() => {
     scrollToBottom()
@@ -102,7 +165,7 @@ export default function ChatRiengDetail() {
     if (!input.trim() || !user || !room) return
 
     const currentInput = input.trim()
-    setInput('') // Clear input immediately for better UX
+    setInput('')
 
     const { data: newMsg, error } = await supabase
       .from('chat_messages')
@@ -116,14 +179,15 @@ export default function ChatRiengDetail() {
 
     if (!error && newMsg) {
       setMessages(prev => {
-        // Tránh trùng lặp nếu Realtime đã bắt được tin nhắn này
         if (prev.some(m => m.id === newMsg.id)) return prev
-        return [...prev, newMsg]
+        const updated = [...prev, newMsg]
+        lastMessageTimeRef.current = newMsg.created_at
+        return updated
       })
     } else if (error) {
       console.error('Lỗi gửi tin nhắn:', error.message)
       alert('Không thể gửi tin nhắn. Vui lòng thử lại.')
-      setInput(currentInput) // Restore input if failed
+      setInput(currentInput)
     }
   }
 

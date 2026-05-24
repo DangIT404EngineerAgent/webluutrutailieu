@@ -22,6 +22,7 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
     }
   }, [user, loading, isAdmin, adminOnly, router])
 
+  // Đang tải auth state - hiển thị loading
   if (loading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '50vh' }}>
@@ -30,7 +31,10 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
     )
   }
 
+  // Chưa đăng nhập - không render gì (đang redirect)
   if (!user) return null
+
+  // Admin only nhưng không phải admin - không render (đang redirect)
   if (adminOnly && !isAdmin) return null
 
   return children

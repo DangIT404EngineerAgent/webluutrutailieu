@@ -28,15 +28,31 @@ export default function ChiTietYeuCauUser() {
   const handleDownloadResult = async () => {
     if (!request?.fulfilled_doc?.file_path) return
 
+    let ext = ''
+    const formatLower = request.fulfilled_doc.file_format?.toLowerCase() || ''
+    if (formatLower === 'word') ext = '.docx'
+    else if (formatLower === 'pdf') ext = '.pdf'
+    else if (formatLower === 'powerpoint') ext = '.pptx'
+    else if (formatLower === 'video') ext = '.mp4'
+
+    const title = request.fulfilled_doc.title || 'Tai_lieu'
+    const downloadName = title.toLowerCase().endsWith(ext) ? title : `${title}${ext}`
+
     const { data } = await supabase.storage
       .from('documents')
-      .createSignedUrl(request.fulfilled_doc.file_path, 60)
+      .createSignedUrl(request.fulfilled_doc.file_path, 300, {
+        download: downloadName
+      })
 
     if (data?.signedUrl) {
+      // Tạo thẻ a để mở tab mới tải file
       const a = document.createElement('a')
       a.href = data.signedUrl
-      a.download = request.fulfilled_doc.title
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      document.body.appendChild(a)
       a.click()
+      document.body.removeChild(a)
     }
   }
 

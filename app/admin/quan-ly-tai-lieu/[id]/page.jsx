@@ -79,7 +79,10 @@ export default function EditDocument() {
 
       const { error: uploadError } = await supabase.storage
         .from('documents')
-        .upload(path, newFile)
+        .upload(path, newFile, {
+          contentType: newFile.type || 'application/octet-stream',
+          upsert: false
+        })
 
       if (uploadError) {
         setError('Lỗi upload file: ' + uploadError.message)
@@ -102,7 +105,10 @@ export default function EditDocument() {
 
       const { error: previewError } = await supabase.storage
         .from('documents')
-        .upload(previewPath, newPreview)
+        .upload(previewPath, newPreview, {
+          contentType: newPreview.type || 'application/pdf',
+          upsert: false
+        })
 
       if (previewError) {
         setError('Lỗi upload preview: ' + previewError.message)
