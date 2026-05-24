@@ -1,0 +1,6 @@
+*admin:
+-Email đăng nhập: admin@edudocs.vn
+-Mật khẩu: Admin@123456
+* Người dùng:
+-Email đăng nhập: oosp0305@gmail.com
+-Mật khẩu: 123456
