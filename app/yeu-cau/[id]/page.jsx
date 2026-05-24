@@ -45,14 +45,7 @@ export default function ChiTietYeuCauUser() {
       })
 
     if (data?.signedUrl) {
-      // Tạo thẻ a để mở tab mới tải file
-      const a = document.createElement('a')
-      a.href = data.signedUrl
-      a.target = '_blank'
-      a.rel = 'noopener noreferrer'
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
+      window.open(data.signedUrl, '_blank')
     }
   }
 
