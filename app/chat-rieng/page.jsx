@@ -29,9 +29,11 @@ export default function DanhSachChatRieng() {
       if (data) {
         // Map data với tin nhắn cuối cùng
         const rooms = data.map(room => {
-          const lastMsg = room.chat_messages?.sort((a, b) =>
-            new Date(b.created_at) - new Date(a.created_at)
-          )?.[0]
+          const lastMsg = room.chat_messages?.length > 0
+            ? room.chat_messages.reduce((latest, current) =>
+                current.created_at > latest.created_at ? current : latest
+              )
+            : undefined;
 
           return {
             ...room,
