@@ -86,8 +86,19 @@ export default function AdminChatHub() {
 
       if (data && !cancelled) {
         const rooms = data.map(room => {
-          const sortedMsgs = (room.chat_messages || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-          const lastMsg = sortedMsgs[0]
+          const msgs = room.chat_messages || []
+          let lastMsg = msgs.length > 0 ? msgs[0] : undefined
+
+          if (msgs.length > 1) {
+            let maxTime = new Date(lastMsg.created_at).getTime()
+            for (let i = 1; i < msgs.length; i++) {
+              const time = new Date(msgs[i].created_at).getTime()
+              if (time > maxTime) {
+                maxTime = time
+                lastMsg = msgs[i]
+              }
+            }
+          }
           
           return {
             ...room,
